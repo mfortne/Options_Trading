@@ -5,6 +5,7 @@ schwab_tokens.json
 portfolio_config.json
 portfolio_config_sanitized.json
 schwab_test_output.json
+test_schwab_auth.py
 *Zone.Identifier
 
 
@@ -20,6 +21,7 @@ __pycache__/
 *.pyc
 venv/
 *.egg-info/
+test_schwab_auth.py
 
 # --- Logs ---
 *.log
