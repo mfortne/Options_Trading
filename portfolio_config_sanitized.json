@@ -1,0 +1,56 @@
+{
+  "portfolios": [
+    {
+      "name": "small",
+      "balance": 500,
+      "max_positions": 1,
+      "pdt_compliant": true,
+      "symbols": ["TQQQ"]
+    },
+    {
+      "name": "medium",
+      "balance": 50000,
+      "max_positions": 2,
+      "pdt_compliant": true,
+      "enforce_pdt": true,
+      "symbols": ["QQQ", "SPY", "TSLA"]
+    },
+    {
+      "name": "large",
+      "balance": 200000,
+      "max_positions": 5,
+      "pdt_compliant": false,
+      "symbols": ["NVDA", "QQQ", "SPY", "TQQQ", "IWM", "TSLA"]
+    }
+  ],
+  "rules": {
+    "target_delta_min": 0.10,
+    "target_delta_max": 0.20,
+    "min_dte": 7,
+    "max_dte": 45,
+    "preferred_dte_min": 21,
+    "preferred_dte_max": 30,
+    "min_premium": 0.10,
+    "max_bid_ask_spread": 0.05,
+    "take_profit_pct": 0.50,
+    "stop_loss_pct": 0.30,
+    "avoid_monday_expiration": true
+  },
+  "api": {
+    "_comment_schwab": [
+      "Schwab replaces Finnhub. Get credentials at https://developer.schwab.com",
+      "  api_key     = App Key (also called Consumer Key) from your approved app",
+      "  app_secret  = App Secret from your approved app",
+      "  callback_url= Must match EXACTLY what you registered (including trailing slash)",
+      "  token_path  = Where the OAuth token JSON file is stored (auto-created on first run)",
+      "First run opens a browser for OAuth; token is saved for future runs.",
+      "Token refreshes automatically; re-auth required every 7 days of inactivity.",
+      "For headless/server use: set env var SCHWAB_HEADLESS=1 before running."
+    ],
+    "schwab_api_key":    "Q9o7oQdC0KJAWEFBaVXKVjxIA3lxh6VXyjOX3OcovbSA2gQT",
+    "schwab_app_secret": "BTk1WOxOg4DOToP6lhNYYFLgJpGbNyvLzBlqAG2Tb6oPe6zlN7u98o6VJzKaPofg",
+    "schwab_callback_url": "https://127.0.0.1:8182",
+    "schwab_token_path": "schwab_token.json",
+    "cache_ttl_minutes": 60
+  }
+}
