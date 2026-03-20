@@ -47,8 +47,8 @@
       "Token refreshes automatically; re-auth required every 7 days of inactivity.",
       "For headless/server use: set env var SCHWAB_HEADLESS=1 before running."
     ],
-    "schwab_api_key":    "Q9o7oQdC0KJAWEFBaVXKVjxIA3lxh6VXyjOX3OcovbSA2gQT",
-    "schwab_app_secret": "BTk1WOxOg4DOToP6lhNYYFLgJpGbNyvLzBlqAG2Tb6oPe6zlN7u98o6VJzKaPofg",
+    "schwab_api_key":    "schwab_api_key",
+    "schwab_app_secret": "schwab_app_secret",
     "schwab_callback_url": "https://127.0.0.1:8182",
     "schwab_token_path": "schwab_token.json",
     "cache_ttl_minutes": 60
