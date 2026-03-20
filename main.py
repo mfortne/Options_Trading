@@ -1,192 +1,185 @@
 """
 Main entry point for options trading system
-Test script for data pipeline (Schwab API edition)
+Runs hourly, checks market hours before scanning
 """
 
 import json
-import sys
-from pathlib import Path
+import time
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from schwab_client import SchwabClient
 from cache import OptionsCache
-from models import OptionType
+from market_hours import is_market_open, market_status_message
+from excel_logger import log_pipeline_run
+from notifier import build_scan_summary, notify_error, notify_startup, send_message
 
 
 def load_config(config_path: str = "portfolio_config.json") -> dict:
-    """Load configuration from JSON"""
     with open(config_path, 'r') as f:
         return json.load(f)
 
 
-def test_data_pipeline():
-    """Test Schwab API and caching"""
+def fetch_chain_with_retry(client, cache, symbol, expiration_date, retries=3, delay=10):
+    """
+    Fetch options chain with cache-first logic and retry on server errors.
+    Always uses a specific expiration date to avoid 502s on large chains.
+    """
+    # Cache-first
+    chain = cache.get_options_chain(symbol, expiration_date)
+    if chain:
+        print(f"  Cache hit for {symbol}")
+        return chain
 
+    # Fetch with retry
+    for attempt in range(1, retries + 1):
+        try:
+            chain = client.fetch_options_chain(symbol, expiration_date)
+            if chain:
+                cache.set_options_chain(chain, ttl_minutes=60)
+                return chain
+        except Exception as e:
+            if attempt < retries:
+                print(f"  Attempt {attempt}/{retries} failed for {symbol}: {e}")
+                print(f"  Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                raise
+
+    return None
+
+
+def run_scan():
+    """Run one full options scan and notify via Telegram."""
+
+    # ----------------------------------------------------------------
+    # Market hours check
+    # ----------------------------------------------------------------
+    notify_closed = os.getenv("NOTIFY_MARKET_CLOSED", "true").lower() == "true"
+
+    is_open, reason = is_market_open()
+    print(f"Market status: {reason}")
+
+    if not is_open:
+        if notify_closed:
+            send_message(market_status_message(is_open, reason))
+        else:
+            print("Market closed — notifications off, exiting.")
+        return
+
+    # ----------------------------------------------------------------
     # Load config
+    # ----------------------------------------------------------------
     try:
         config = load_config()
     except FileNotFoundError:
-        print("Error: portfolio_config.json not found")
-        print("Please copy portfolio_config.json to your working directory")
+        notify_error("portfolio_config.json not found")
         return
 
-    api_cfg = config['api']
-
-    # Check for Schwab credentials
-    api_key    = api_cfg.get('schwab_api_key', '')
-    app_secret = api_cfg.get('schwab_app_secret', '')
+    api_cfg      = config['api']
+    api_key      = api_cfg.get('schwab_api_key', '')
+    app_secret   = api_cfg.get('schwab_app_secret', '')
     callback_url = api_cfg.get('schwab_callback_url', 'https://127.0.0.1:8182')
     token_path   = api_cfg.get('schwab_token_path', 'schwab_token.json')
 
     if not api_key or api_key == "YOUR_SCHWAB_APP_KEY_HERE":
-        print("Error: Schwab API key not configured")
-        print("1. Create an app at https://developer.schwab.com")
-        print("2. Update 'api.schwab_api_key' in portfolio_config.json")
+        notify_error("Schwab API key not configured in portfolio_config.json")
         return
 
-    if not app_secret or app_secret == "YOUR_SCHWAB_APP_SECRET_HERE":
-        print("Error: Schwab app secret not configured")
-        print("1. Create an app at https://developer.schwab.com")
-        print("2. Update 'api.schwab_app_secret' in portfolio_config.json")
-        return
+    print("=" * 60)
+    print("Options Scan Starting (Schwab API)")
+    print("=" * 60)
 
-    print("=" * 80)
-    print("Options Trading Data Pipeline Test  (Schwab API)")
-    print("=" * 80)
+    notify_startup()
 
-    # Initialize clients
-    client = SchwabClient(
-        api_key=api_key,
-        app_secret=app_secret,
-        callback_url=callback_url,
-        token_path=token_path,
-    )
-    cache = OptionsCache()
-
-    # Test with first symbol from config
-    symbol = config['portfolios'][0]['symbols'][0]
-    print(f"\nTesting with symbol: {symbol}")
-
-    # Test 1: Get quote
-    print("\n[1] Fetching stock quote...")
     try:
-        quote = client.get_quote(symbol)
-        print(f"  Current price: ${quote['current_price']:.2f}")
-        print(f"  High:          ${quote['high']:.2f}")
-        print(f"  Low:           ${quote['low']:.2f}")
+        client = SchwabClient(
+            api_key=api_key,
+            app_secret=app_secret,
+            callback_url=callback_url,
+            token_path=token_path,
+        )
+        cache = OptionsCache()
     except Exception as e:
-        print(f"  Error: {e}")
+        notify_error(f"Failed to initialize client: {e}")
         return
 
-    # Test 2: Get expirations
-    print(f"\n[2] Fetching option expirations for {symbol}...")
-    try:
-        expirations = client.get_option_expirations(symbol)
-        print(f"  Found {len(expirations)} expirations")
-        print(f"  Nearest 3: {expirations[:3]}")
-    except Exception as e:
-        print(f"  Error: {e}")
-        return
-
-    if not expirations:
-        print(f"  No expirations found for {symbol}")
-        return
-
-    # Test 3: Fetch options chain (with caching)
-    expiration = expirations[0]
-    print(f"\n[3] Fetching options chain for {symbol} {expiration}...")
-
-    print("  Fetching from API (first time)...")
-    try:
-        chain = client.fetch_options_chain(symbol, expiration)
-        if not chain:
-            print(f"  Error: Could not fetch options chain")
-            return
-
-        print(f"  ✓ Calls: {len(chain.calls)}")
-        print(f"  ✓ Puts: {len(chain.puts)}")
-
-        print("  Caching...")
-        cache.set_options_chain(chain, ttl_minutes=60)
-    except Exception as e:
-        print(f"  Error: {e}")
-        return
-
-    # Test 4: Retrieve from cache
-    print(f"\n[4] Testing cache retrieval...")
-    try:
-        cached_chain = cache.get_options_chain(symbol, expiration)
-        if cached_chain:
-            print(f"  ✓ Cache hit!")
-            print(f"  ✓ Calls in cache: {len(cached_chain.calls)}")
-            print(f"  ✓ Puts in cache:  {len(cached_chain.puts)}")
-        else:
-            print(f"  Cache miss (expected on first run)")
-    except Exception as e:
-        print(f"  Error: {e}")
-
-    # Test 5: Filter options by rules
-    print(f"\n[5] Filtering options by rules (delta 0.10-0.20)...")
-
-    rules = config['rules']
+    rules       = config['rules']
     delta_min   = rules['target_delta_min']
     delta_max   = rules['target_delta_max']
     min_premium = rules['min_premium']
     max_spread  = rules['max_bid_ask_spread']
 
-    eligible_puts = []
-    for put in chain.puts:
-        if put.delta is None:
-            continue
-        abs_delta = abs(put.delta)
-        if (put.bid_ask_spread <= max_spread and
-                put.bid >= min_premium and
-                delta_min <= abs_delta <= delta_max):
-            eligible_puts.append(put)
+    # Get nearest expiration date once — used for all symbols
+    from schwab_client import _next_expiration_date
+    expiration_date = _next_expiration_date()
+    print(f"Target expiration: {expiration_date}")
 
-    print(f"  Found {len(eligible_puts)} eligible puts")
-    if eligible_puts:
-        print("\n  Top 3 puts to sell (by premium):")
-        for put in sorted(eligible_puts, key=lambda x: x.bid, reverse=True)[:3]:
-            print(f"    Strike ${put.strike:.2f}: "
-                  f"Bid ${put.bid:.2f}, "
-                  f"Delta {put.delta:.2f}, "
-                  f"Spread ${put.bid_ask_spread:.2f}")
+    # Deduplicate symbols across portfolios
+    symbol_portfolios: dict = {}
+    for portfolio in config['portfolios']:
+        for symbol in portfolio['symbols']:
+            if symbol not in symbol_portfolios:
+                symbol_portfolios[symbol] = []
+            symbol_portfolios[symbol].append(portfolio['name'])
 
-    eligible_calls = []
-    for call in chain.calls:
-        if call.delta is None:
-            continue
-        if (call.bid_ask_spread <= max_spread and
-                call.bid >= min_premium and
-                delta_min <= call.delta <= delta_max):
-            eligible_calls.append(call)
+    print(f"Unique symbols to scan: {list(symbol_portfolios.keys())}")
 
-    print(f"\n  Found {len(eligible_calls)} eligible calls")
-    if eligible_calls:
-        print("\n  Top 3 calls to sell (by premium):")
-        for call in sorted(eligible_calls, key=lambda x: x.bid, reverse=True)[:3]:
-            print(f"    Strike ${call.strike:.2f}: "
-                  f"Bid ${call.bid:.2f}, "
-                  f"Delta {call.delta:.2f}, "
-                  f"Spread ${call.bid_ask_spread:.2f}")
-            
-# Quick & dirty logging hook
-    from excel_logger import log_pipeline_run
+    for symbol, portfolios in symbol_portfolios.items():
+        portfolio_label = ", ".join(portfolios)
+        print(f"\nScanning {symbol} (portfolios: {portfolio_label})...")
 
-    # Test 6: Cache statistics
-    print(f"\n[6] Cache statistics:")
-    stats = cache.get_cache_size()
-    print(f"  Cached option chains: {stats['options_chains']}")
-    print(f"  Cached quotes: {stats['quotes']}")
-    log_pipeline_run(
-        symbol=symbol,
-        current_price=quote['current_price'],
-        eligible_puts=eligible_puts,
-        eligible_calls=eligible_calls
-    )
+        try:
+            chain = fetch_chain_with_retry(
+                client, cache, symbol, expiration_date
+            )
 
-    print(f"\n[✓] Data pipeline test complete!")
-    print(f"API calls remaining this minute: {client.get_rate_limit_remaining()}/{SchwabClient._RATE_LIMIT_MAX}")
+            if not chain:
+                print(f"  Could not fetch chain after retries, skipping.")
+                notify_error(f"{symbol}: could not fetch options chain after retries")
+                continue
+
+            print(f"  Price: ${chain.current_price:.2f}")
+
+            eligible_puts = [
+                p for p in chain.puts
+                if p.delta is not None
+                and p.bid_ask_spread <= max_spread
+                and p.bid >= min_premium
+                and delta_min <= abs(p.delta) <= delta_max
+            ]
+
+            eligible_calls = [
+                c for c in chain.calls
+                if c.delta is not None
+                and c.bid_ask_spread <= max_spread
+                and c.bid >= min_premium
+                and delta_min <= c.delta <= delta_max
+            ]
+
+            print(f"  Eligible puts:  {len(eligible_puts)}")
+            print(f"  Eligible calls: {len(eligible_calls)}")
+
+            log_pipeline_run(symbol, chain.current_price, eligible_puts, eligible_calls)
+
+            msg = build_scan_summary(
+                symbol=symbol,
+                current_price=chain.current_price,
+                eligible_puts=eligible_puts,
+                eligible_calls=eligible_calls,
+                portfolio_name=portfolio_label,
+            )
+            send_message(msg)
+
+        except Exception as e:
+            error_msg = f"{symbol} scan failed after all retries: {e}"
+            print(f"  ERROR: {error_msg}")
+            notify_error(error_msg)
+
+    print("\n✓ Scan complete.")
 
 
 if __name__ == "__main__":
-    test_data_pipeline()
+    run_scan()
