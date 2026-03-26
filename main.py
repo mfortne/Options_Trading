@@ -4,9 +4,12 @@ Runs hourly, checks market hours before scanning
 """
 
 import json
+from pdb import pm
 import time
 import os
 from dotenv import load_dotenv
+from paper_portfolio import PaperPortfolioManager
+from datetime import datetime, date
 
 load_dotenv()
 
@@ -102,6 +105,22 @@ def run_scan():
             token_path=token_path,
         )
         cache = OptionsCache()
+        pm = PaperPortfolioManager ()
+        pm.expire_pending_trades(max_age_minutes=10)
+
+        # Check open positions for exit signals
+        exit_signals = pm.check_exit_signals()
+        for signal in exit_signals:
+            pos = signal["position"]
+            sig = signal["signal"]
+            emoji = "✅" if sig == "TAKE_PROFIT" else "🔴"
+            send_message(
+                f"{emoji} *{sig}*\n"
+                f"{pos['symbol']} ${pos['strike']} {pos['option_type']}\n"
+                f"Entry: ${pos['entry_premium']:.2f} → Current: ${pos['current_premium']:.2f}\n"
+                f"Position ID: `{pos['position_id']}`"
+    )
+
     except Exception as e:
         notify_error(f"Failed to initialize client: {e}")
         return
@@ -164,6 +183,50 @@ def run_scan():
 
             log_pipeline_run(symbol, chain.current_price, eligible_puts, eligible_calls)
 
+            # Re-price any open positions for this symbol
+            from datetime import datetime, date
+            for pos in pm.get_open_positions():
+                if pos["symbol"] != symbol:
+                    continue
+            # Find matching option in the current chain
+            match = next(
+                (p for p in chain.puts
+                if abs(p.strike - pos["strike"]) < 0.01
+                and pos["option_type"] == "PUT")
+            or
+            (c for c in chain.calls
+                if abs(c.strike - pos["strike"]) < 0.01
+                and pos["option_type"] == "CALL"),
+            None
+        )
+
+            if match:
+                new_dte = (datetime.strptime(expiration_date, "%Y-%m-%d").date() - date.today()).days
+                pm.update_position_price(
+                    position_id=pos["position_id"],
+                    current_premium=match.bid,
+                    current_price=chain.current_price,
+                    new_dte=new_dte,
+                )
+                print(f"  Re-priced {pos['position_id']}: ${match.bid:.2f}")
+            else:
+                print(f"  No chain match for open position {pos['position_id']} — may have expired")
+
+            for put in sorted(eligible_puts, key=lambda x: x.bid, reverse=True)[:1]:
+                from models import OptionType
+                pm.add_pending_trade(
+                    symbol=symbol,
+                    option_type="PUT",
+                    strike=put.strike,
+                    expiration_date=expiration_date,
+                    dte=(datetime.strptime(expiration_date, "%Y-%m-%d").date() - date.today()).days,
+                    bid=put.bid,
+                    delta=put.delta,
+                    spread=put.bid_ask_spread,
+                    current_price=chain.current_price,
+                    portfolio_name=portfolios[0],
+                )
+            
             msg = build_scan_summary(
                 symbol=symbol,
                 current_price=chain.current_price,
