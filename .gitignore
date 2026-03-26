@@ -8,7 +8,7 @@ schwab_test_output.json
 test_schwab_auth.py
 *Zone.Identifier
 Old_schwab_token.json
-
+telegram_handler.pid
 
 # --- Generated data ---
 data/
